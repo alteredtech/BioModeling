@@ -61,3 +61,48 @@ def test_find_time_and_equilibrium_on_heated_rod():
     args = (1.0, 1e-3, (0.05,))
     assert find_time(u, *args, (10,), 50.0) > 0
     assert find_equilibrium(u, *args, (10,), 10) == pytest.approx(100.0, abs=0.5)
+
+
+# --- 1D tables (Assign6, Assign9) and cooling (Assign8) ---
+from biomodeling.cooling import step_cooling  # noqa: E402
+from biomodeling.heat1d import analytical_table, crank_nicolson_table, finite_table  # noqa: E402
+
+
+def test_tables_have_same_layout_and_times():
+    f, a, c = finite_table(), analytical_table(), crank_nicolson_table()
+    assert f.shape == a.shape == c.shape == (102, 12)
+    assert np.allclose(f[:, 0], a[:, 0]) and np.allclose(f[1:, 0], np.arange(101) * 0.001)
+
+
+def test_finite_and_implicit_agree_with_analytical_at_same_time():
+    f, a, c = finite_table(), analytical_table(), crank_nicolson_table()
+    assert np.abs(f[11:, 1:] - a[11:, 1:]).max() < 0.02  # skip the first steps: the start profile has a kink
+    assert np.abs(c[11:, 1:] - a[11:, 1:]).max() < 0.02
+
+
+def loop_cooling(u, fo, bi, t):
+    """The original per-cell equations from Assign8, kept as a reference."""
+    ny, nx = u.shape
+    new = np.zeros_like(u)
+    for j in range(ny):
+        for k in range(nx):
+            top, bottom, left, right = j == 0, j == ny - 1, k == 0, k == nx - 1
+            up = u[j - 1, k] if not top else u[j + 1, k]
+            down = u[j + 1, k] if not bottom else u[j - 1, k]
+            lf = u[j, k - 1] if not left else u[j, k + 1]
+            rt = u[j, k + 1] if not right else u[j, k - 1]
+            conv = (top + left + right) * 2 * bi * fo * (t - u[j, k])
+            new[j, k] = u[j, k] + fo * (up + down + lf + rt - 4 * u[j, k]) + conv
+    return new
+
+
+def test_cooling_matches_explicit_corner_and_edge_formulas():
+    rng = np.random.default_rng(1)
+    u = rng.random((11, 16)) * 30
+    fo, bi, t = 0.002, 0.25, 5.0
+    new = step_cooling(u, fo, bi, t)
+    assert np.allclose(new, loop_cooling(u, fo, bi, t))
+    # hand-written original equations
+    assert new[0, 0] == pytest.approx((1 - 4*fo - 4*bi*fo) * u[0, 0] + 2*fo*(u[0, 1] + u[1, 0] + 2*bi*t))
+    assert new[10, 0] == pytest.approx((1 - 4*fo - 2*bi*fo) * u[10, 0] + 2*fo*(u[9, 0] + u[10, 1] + bi*t))
+    assert new[10, 5] == pytest.approx((1 - 4*fo) * u[10, 5] + 2*fo*(u[9, 5] + .5*(u[10, 4] + u[10, 6])))
